@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Estimating π with the Monte Carlo Method</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#F3F6FA;--panel:#fff;--ink:#14213D;--mute:#5B6678;--line:#D5DBE5;--in:#1F5FBF;--out:#E03A3E;--fall:#F2A900;--grid:#E8ECF2}
+@media (prefers-color-scheme:dark){:root{--bg:#0E1621;--panel:#16212F;--ink:#EAF0F8;--mute:#9AA8BC;--line:#2A3A50;--in:#5AA2FF;--out:#FF6B6B;--fall:#FFC93C;--grid:#1E2C40}}
+*{box-sizing:border-box}
+body{margin:0;padding:24px;background:var(--bg);color:var(--ink);font-family:"Space Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:24px;align-items:start}
+header{grid-column:1/-1}
+h1{margin:0 0 6px;font-size:clamp(24px,4vw,34px);letter-spacing:-.01em}
+header p{margin:0;color:var(--mute);max-width:64ch;line-height:1.5}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px}
+#sq{display:block;width:100%;aspect-ratio:1;border-radius:10px}
+aside{display:flex;flex-direction:column;gap:16px}
+.big{padding:18px 20px}
+.big small{color:var(--mute)}
+#pi{font-size:clamp(56px,9vw,88px);font-weight:700;line-height:1;color:var(--in);font-variant-numeric:tabular-nums;margin:6px 0}
+#formula{color:var(--mute);font-variant-numeric:tabular-nums}
+dl{margin:0;padding:6px 20px}
+dl div{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line)}
+dl div:last-child{border:0}
+dt{color:var(--mute)}dd{margin:0;font-weight:600;font-variant-numeric:tabular-nums}
+.in{color:var(--in)}.out{color:var(--out)}
+.chart{padding:12px 14px 8px}
+.chart small{color:var(--mute)}
+#chart{display:block;width:100%;height:150px}
+.ctl{padding:16px 20px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+button{font:inherit;font-weight:600;padding:9px 18px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button.go{background:var(--in);border-color:var(--in);color:var(--bg)}
+button:focus-visible,input:focus-visible{outline:3px solid var(--fall);outline-offset:2px}
+.ctl label{flex-basis:100%;color:var(--mute)}
+input[type=range]{width:100%;accent-color:var(--in)}
+@media (max-width:860px){main{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Estimating π with random points</h1>
+  <p>Random points drop into a square. Blue points land inside the circle, red points land outside. The fraction inside is about π/4, so π ≈ 4 × inside ÷ total.</p>
+</header>
+
+<canvas id="sq" class="panel" aria-label="Square with a circle and random points"></canvas>
+
+<aside>
+  <div class="panel big">
+    <small>Estimate of π</small>
+    <div id="pi" aria-live="off">—</div>
+    <div id="formula">Press Start to drop points</div>
+  </div>
+  <dl class="panel">
+    <div><dt>Total points</dt><dd id="n">0</dd></div>
+    <div><dt>Inside circle</dt><dd id="ins" class="in">0</dd></div>
+    <div><dt>Outside circle</dt><dd id="outs" class="out">0</dd></div>
+    <div><dt>Actual π</dt><dd>3.14159</dd></div>
+    <div><dt>Error</dt><dd id="err">—</dd></div>
+  </dl>
+  <div class="panel chart">
+    <small>Estimate vs. number of points (log scale)</small>
+    <canvas id="chart"></canvas>
+  </div>
+  <div class="panel ctl">
+    <button id="go" class="go">Start</button>
+    <button id="reset">Reset</button>
+    <label for="speed">Speed: <b id="rate"></b> points per second</label>
+    <input id="speed" type="range" min="0" max="100" value="45">
+  </div>
+</aside>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('sq'), cx = cv.getContext('2d');
+const ch = $('chart'), cc = ch.getContext('2d');
+const dots = document.createElement('canvas'), dx = dots.getContext('2d');
+const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const FALL = 450, M = 10;
+let S = 600, W = 580, n = 0, ins = 0, run = false, fall = [], hist = [], acc = 0, last = 0, dirty = true;
+const C = {};
+const st = getComputedStyle(document.documentElement);
+['panel','ink','mute','line','in','out','fall','grid'].forEach(k => C[k] = st.getPropertyValue('--' + k).trim());
+
+const rate = () => Math.round(Math.pow(10, $('speed').value / 100 * 3.7));
+const px = x => M + (x + 1) / 2 * W;
+const py = y => M + (1 - y) / 2 * W;
+
+function size() {
+  const d = devicePixelRatio || 1;
+  const old = document.createElement('canvas');
+  old.width = dots.width; old.height = dots.height;
+  old.getContext('2d').drawImage(dots, 0, 0);
+  S = cv.clientWidth; W = S - 2 * M;
+  cv.width = cv.height = dots.width = dots.height = Math.round(S * d);
+  cx.setTransform(d, 0, 0, d, 0, 0);
+  dx.setTransform(d, 0, 0, d, 0, 0);
+  if (n) dx.drawImage(old, 0, 0, old.width, old.height, 0, 0, S, S);
+  ch.width = Math.round(ch.clientWidth * d); ch.height = Math.round(ch.clientHeight * d);
+  cc.setTransform(d, 0, 0, d, 0, 0);
+  dirty = true;
+}
+
+function land(p) {
+  n++;
+  const inside = p.x * p.x + p.y * p.y <= 1;
+  if (inside) ins++;
+  dx.fillStyle = inside ? C.in : C.out;
+  dx.globalAlpha = .85;
+  if (n < 3000) { dx.beginPath(); dx.arc(px(p.x), py(p.y), 3.2, 0, 7); dx.fill(); }
+  else dx.fillRect(px(p.x) - 1.2, py(p.y) - 1.2, 2.4, 2.4);
+  if (n < 100 || n % Math.pow(10, Math.floor(Math.log10(n)) - 1) === 0) { hist.push([n, 4 * ins / n]); dirty = true; }
+}
+
+function drawChart() {
+  const w = ch.clientWidth, h = ch.clientHeight, l = 30, b = 18, r = 8, t = 6;
+  const dec = Math.max(3, Math.ceil(Math.log10(n + 1))), lo = 2.4, hi = 3.9;
+  const X = v => l + Math.log10(Math.max(1, v)) / dec * (w - l - r);
+  const Y = v => t + (hi - Math.min(hi, Math.max(lo, v))) / (hi - lo) * (h - t - b);
+  cc.clearRect(0, 0, w, h);
+  cc.font = '11px "Space Grotesk",system-ui,sans-serif';
+  cc.strokeStyle = C.line; cc.fillStyle = C.mute; cc.lineWidth = 1; cc.textAlign = 'left';
+  for (const v of [2.5, 3, 3.5]) { cc.beginPath(); cc.moveTo(l, Y(v)); cc.lineTo(w - r, Y(v)); cc.stroke(); cc.fillText(v.toFixed(1), 2, Y(v) + 4); }
+  const lab = ['1','10','100','1k','10k','100k','1M','10M'];
+  for (let i = 0; i <= dec; i++) { cc.textAlign = i === 0 ? 'left' : i === dec ? 'right' : 'center'; cc.fillText(lab[i], X(Math.pow(10, i)), h - 4); }
+  cc.setLineDash([5, 4]); cc.strokeStyle = C.fall; cc.lineWidth = 1.5;
+  cc.beginPath(); cc.moveTo(l, Y(Math.PI)); cc.lineTo(w - r, Y(Math.PI)); cc.stroke(); cc.setLineDash([]);
+  if (hist.length) {
+    cc.strokeStyle = C.in; cc.lineWidth = 2; cc.beginPath();
+    hist.forEach(([k, v], i) => i ? cc.lineTo(X(k), Y(v)) : cc.moveTo(X(k), Y(v)));
+    cc.stroke();
+  }
+  dirty = false;
+}
+
+function stats() {
+  const est = n ? 4 * ins / n : null;
+  $('pi').textContent = est === null ? '—' : est.toFixed(4);
+  $('formula').textContent = n ? `4 × ${ins.toLocaleString()} ÷ ${n.toLocaleString()}` : 'Press Start to drop points';
+  $('n').textContent = n.toLocaleString();
+  $('ins').textContent = ins.toLocaleString();
+  $('outs').textContent = (n - ins).toLocaleString();
+  $('err').textContent = est === null ? '—' : Math.abs(est - Math.PI).toFixed(4);
+  if (dirty) drawChart();
+}
+
+function draw(t) {
+  cx.fillStyle = C.panel; cx.fillRect(0, 0, S, S);
+  cx.strokeStyle = C.grid; cx.lineWidth = 1; cx.beginPath();
+  for (const g of [0, .25, .5, .75, 1]) { const q = M + g * W; cx.moveTo(q, M); cx.lineTo(q, M + W); cx.moveTo(M, q); cx.lineTo(M + W, q); }
+  cx.stroke();
+  cx.drawImage(dots, 0, 0, S, S);
+  cx.strokeStyle = C.mute; cx.lineWidth = 1.5; cx.strokeRect(M, M, W, W);
+  cx.strokeStyle = C.ink; cx.lineWidth = 2.5; cx.beginPath(); cx.arc(S / 2, S / 2, W / 2, 0, 7); cx.stroke();
+  cx.fillStyle = C.fall;
+  for (const p of fall) {
+    const u = (t - p.t0) / FALL, y = -8 + (py(p.y) + 8) * u * u;
+    cx.beginPath(); cx.arc(px(p.x), y, 3.6, 0, 7); cx.fill();
+  }
+}
+
+function frame(t) {
+  const dt = Math.min(.05, (t - last) / 1000 || 0); last = t;
+  if (run) {
+    acc += rate() * dt;
+    let k = Math.floor(acc); acc -= k;
+    while (k-- > 0) {
+      const p = { x: Math.random() * 2 - 1, y: Math.random() * 2 - 1, t0: t };
+      if (still || rate() > 300) land(p); else fall.push(p);
+    }
+  }
+  for (let i = fall.length - 1; i >= 0; i--) if (t - fall[i].t0 >= FALL) { land(fall[i]); fall.splice(i, 1); }
+  draw(t); stats();
+  requestAnimationFrame(frame);
+}
+
+function toggle() { run = !run; $('go').textContent = run ? 'Pause' : 'Start'; }
+$('go').onclick = toggle;
+$('reset').onclick = () => {
+  run = false; n = ins = 0; fall = []; hist = []; acc = 0; dirty = true;
+  dx.clearRect(0, 0, S, S); $('go').textContent = 'Start';
+};
+$('speed').oninput = () => $('rate').textContent = rate().toLocaleString();
+addEventListener('keydown', e => { if (e.code === 'Space' && e.target.tagName !== 'BUTTON') { e.preventDefault(); toggle(); } });
+addEventListener('resize', size);
+$('rate').textContent = rate().toLocaleString();
+size();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
